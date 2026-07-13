@@ -1,0 +1,86 @@
+# Second review: now that PR1 (reliability) and PR2 (--resume + size warning) have landed,
+# step back and debate the repo from an ENGINEERING-MATURITY and GENERALIZATION angle —
+# plus concretely how to improve the README.
+#   python3 run.py --config config.review2.yaml
+
+topic: "Review agent-debate-cli for engineering maturity and generalization, and how to improve the README"
+language: "English"
+report_language: "中文"        # final report in Chinese
+max_rounds: 4
+turn_word_limit: 280
+per_turn_timeout: 300
+output_dir: "discussions"
+session: "agent-debate-cli"
+
+context: >
+  [Project: agent-debate-cli] Local CLI agents (Claude Code, Codex) debate around a shared Markdown
+  doc (DISCUSSION.md), MAD-style: organizer opens -> debaters take turns -> JSON verdict -> Chinese
+  final report. Config-driven roles/drivers/topic. Two hardening PRs have ALREADY landed, so do not
+  re-raise them as new work: PR1 = driver reliability (DriverResult, bounded timeout with reader/writer
+  threads + process-group kill, failed-turn records, robust last-line json.loads verdict, doc
+  anti-forgery sanitization + heading-only next_seq); PR2 = --resume/non-destructive doc + a read-only
+  context-size warning. There is a pytest suite (tests/test_pr1.py, tests/test_pr2.py).
+
+  READ the current source before you critique — it reflects those PRs:
+  README.md, run.py, src/config.py, src/orchestrator.py, src/document.py, src/drivers.py,
+  src/prompts.py, src/agent.py, src/tmuxio.py, tests/.
+
+  Debate two things and PRIORITIZE ruthlessly (ranked, actionable list — not a wish list):
+
+  (A) ENGINEERING MATURITY & GENERALIZATION. Is the design still too coupled to the one "CLI debate"
+  use case, or should there be a reusable core (e.g. pluggable transports beyond subprocess CLIs,
+  pluggable turn/convergence policies, output sinks beyond a Markdown file, a library API vs a script)?
+  Weigh that against over-abstraction. Also the ordinary maturity gaps: packaging (pyproject / console
+  entry point), typing & static checks, CI, config schema validation & error messages, structured
+  logging/observability, mixed-language code comments, Windows/portability of the POSIX process-group
+  kill, and any remaining fragile seams. For each, say what you'd change, the cost, and whether it's
+  worth it now vs later.
+
+  (B) THE README. Read README.md as if you just landed on the repo. What's missing, misleading, or
+  hard to follow? Consider: does the value/what-it-is land in 10 seconds; is there a real example of a
+  produced DISCUSSION.md; install/prereqs (tmux, node, the two CLIs) clarity; the four config files
+  explained; troubleshooting; contributing/tests; badges; English vs Chinese (README mixes both — is
+  that a problem for discoverability?). Propose a concrete improved structure and the top edits.
+
+drivers:
+  claude:
+    cmd: ["claude", "-p", "--output-format", "text", "--allowedTools", "Read,Glob,Grep"]
+    mode: stdin
+  codex:
+    cmd: ["codex", "exec", "--output-last-message", "{outfile}", "-"]
+    mode: stdin
+
+organizer:
+  name: manager
+  driver: claude
+  role: >
+    You are the manager/chair of this review. You are a FACILITATOR, not the author of the plan: do NOT
+    propose the improvements or decide the priorities yourself, and do NOT steer toward any answer. Open
+    by inviting codex_dev and claude_dev to each put forward what they think matters most across the two
+    themes (engineering maturity / generalization, and the README). Each round, name the single sharpest
+    open disagreement and require the next round to resolve it; push them to PRIORITIZE. Keep the README
+    thread concrete (specific edits, not "make it better"). Do not declare convergence until they produce
+    a concrete, ranked, actionable list — with reasons — covering both themes; only then output
+    consensus_reached=Yes. Stay strictly neutral; make no engineering choices for them.
+
+agents:
+  - name: codex_dev
+    driver: codex
+    role: >
+      You are the pragmatic, ship-oriented reviewer. You resist over-generalization: a reusable
+      "framework" with pluggable everything is easy to imagine and expensive to earn. Read the actual
+      code, cite files/functions, and for each proposal give the concrete change, the LOC/cost, and
+      whether it pays off NOW versus being premature. Favor the smallest changes that raise maturity
+      (packaging, CI, one clear extension seam) over speculative abstraction. On the README, favor edits
+      that get a newcomer running fast. When claude_dev proposes a bigger abstraction, demand it prove
+      the second concrete use case that justifies it; even when you agree, add a caveat or cost.
+  - name: claude_dev
+    driver: claude
+    role: >
+      You are the architecture- and longevity-minded reviewer. You look for the seams that would let
+      this generalize cleanly (transport, turn policy, output sink, library API) and for the maturity
+      gaps that bite real users (typing, validation, observability, portability, docs). Read the source,
+      name concrete coupling and failure points, and propose the minimal seam that buys the most future
+      flexibility. But when codex_dev shows an abstraction lacks a second real use case, concede it's
+      premature. On the README, argue for the structure that makes a stranger trust and adopt the repo.
+      Your goal is the best maturity-per-effort, not the biggest redesign.

@@ -1,147 +1,194 @@
 # agent-debate-cli
 
-> Let your local CLI agents (Claude Code, Codex, …) **debate a topic in a shared Markdown document**.
-> Moderator-led, MAD-style multi-agent debate, with a live tmux view. No API keys of your own — it drives the CLIs you already use.
+**Make your local CLI agents debate.** Point Claude Code, Codex (any non-interactive CLI) at a
+question; a moderator opens it, the agents argue in turns over one shared Markdown document, and you
+get an auditable transcript plus a final report. No API keys of your own — it drives the CLIs you
+already have logged in.
 
-**Topics（发布到 GitHub 时填这些，利于搜索）**：`multi-agent-debate` · `llm-debate` · `agent` · `claude-code` · `codex` · `tmux` · `cli` · `markdown`
+Structure borrowed from [MAD (Multi-Agents-Debate)](https://github.com/Skytliang/Multi-Agents-Debate)
+— `moderator + players + rounds + JSON verdict` — but the "memory broadcast" is a shared file every
+agent reads and appends to, and the players are your real local CLIs.
+
+<details>
+<summary><b>What a run produces</b> (excerpt of a real <code>DISCUSSION.md</code>)</summary>
+
+```markdown
+# Roundtable debate: How should we design rate limiting for a public API?
+
+## [chair] Organizer · Opening · #1 · 2026-07-13 23:13
+Three decision points — algorithm choice, quota dimension, over-limit feedback.
+Please weigh in on trade-offs, abuse protection, and developer experience.
+
+## [alice] Round 1 · #2 · 2026-07-13 23:13
+I'd start from a simple, operable token bucket, limit per key, and put quota +
+reset time in response headers so callers can self-adapt.
+
+## [chair] Organizer · Round 1 summary · #5 · 2026-07-13 23:13
+Broad agreement on a token bucket + per-key quota; burst handling still contested.
+{"consensus_reached": "No", "reason": "core design is clear", "current_answer": "token bucket + per-key quota + 429/Retry-After"}
+
+## [chair] Organizer · Final report · #10 · 2026-07-13 23:13
+Use a token bucket for baseline limiting, quota per API key, keep burst headroom,
+return 429 with Retry-After and remaining-quota headers.
+```
+</details>
+
+## Prerequisites
+
+- **Python ≥ 3.10** (runtime dep: PyYAML only).
+- **The CLIs you want to debate**, installed and logged in — e.g.
+  `npm i -g @anthropic-ai/claude-code` and `npm i -g @openai/codex`. Verify each returns text
+  non-interactively:
+  ```bash
+  echo "introduce yourself in one line" | claude -p --output-format text
+  echo "introduce yourself in one line" | codex exec -
+  ```
+- **tmux ≥ 3.0** *(optional)* — only for the live pane view; everything runs fine without it.
+
+## Quickstart (5 minutes, mock-first — spends no tokens)
+
+```bash
+pip install -r requirements.txt
+
+# 1) Dry run with a fake CLI — proves the whole pipeline without any token cost
+python3 run.py --config configs/mock.yaml
+#    watch it live in another terminal (optional):
+tmux attach -t agent-debate-cli-mock
+
+# 2) The real thing (needs claude + codex installed & logged in)
+python3 run.py --config configs/example.yaml
+tmux attach -t agent-debate-cli
+```
+
+Every run is saved to `discussions/<topic>/<timestamp>/`: the transcript `DISCUSSION.md`, each
+agent's raw stream `<name>.log`, and a **snapshot of the config used** (for reproducibility).
+
+Other flags: `--interactive` (pause each round so you can add a `## [You]` note),
+`--no-tmux`, and `--resume <DISCUSSION.md>` (continue a crashed/interrupted run from the last
+complete round). Exit codes: `0` converged, `2` ran out of rounds without consensus, `1` error.
+
+## Configure it
+
+Everything is YAML — roles, how many agents, which CLI plays whom, the topic. No code changes.
+
+```yaml
+topic: "The question to debate"
+language: "English"          # language of the debate
+report_language: "中文"       # language of the organizer's final report (defaults to language)
+max_rounds: 3                # ends early once the organizer verdict is Yes and the round had no failure
+turn_word_limit: 200
+output_dir: "discussions"    # leave `document` empty to auto-organize per topic under here
+session: "agent-debate-cli"  # tmux session name
+
+drivers:                     # how to call each CLI non-interactively
+  claude: { cmd: ["claude", "-p", "--output-format", "text"], mode: stdin }
+  codex:  { cmd: ["codex", "exec", "--output-last-message", "{outfile}", "-"], mode: stdin }
+
+organizer:                   # the moderator
+  name: chair
+  driver: claude
+  role: "You are the chair of the roundtable…"
+
+agents:                      # debaters — add/remove freely, any number
+  - { name: alice, driver: codex,  role: "A systems engineer who favors simple solutions" }
+  - { name: bob,   driver: claude, role: "A security & reliability reviewer" }
+```
+
+| Key | Meaning |
+| --- | --- |
+| `topic` | the question to debate (required) |
+| `language` / `report_language` | debate language / final-report language (report defaults to `language`) |
+| `max_rounds` | max debate rounds; converges earlier on a Yes verdict |
+| `turn_word_limit` | word cap per contribution |
+| `per_turn_timeout` | seconds before a stuck CLI call is killed (default 300) |
+| `context_warn_chars` | warn (read-only) when the doc sent to a prompt exceeds this (default 200000) |
+| `document` | fixed output path; **leave empty** to auto-organize under `output_dir` |
+| `output_dir` | root for auto per-topic folders (default `discussions`) |
+| `session` | tmux session name |
+| `context` / `context_file` | optional background text / a file (resolved **relative to the config file**) seeded into the doc |
+| `drivers.<name>.cmd` | argv; `{prompt}` (arg mode) and `{outfile}` (clean-output file) are substituted |
+| `drivers.<name>.mode` | `stdin` (prompt piped in) or `arg` (prompt appended / `{prompt}`) |
+| `organizer`, `agents[]` | `{name, driver, role}`; `driver` must be a defined driver; names unique |
+
+Bundled configs: `configs/example.yaml` (general), `configs/mock.yaml` (zero-cost test),
+`configs/design.yaml` (review this repo), `configs/plan.yaml` (turn a review into a plan),
+`configs/review2.yaml` (maturity/generalization review).
+
+Malformed configs fail fast with a field-path message (e.g. `config error: drivers.codex.mode
+must be 'arg' or 'stdin'`) before any agent is launched.
+
+## How it works
+
+Each CLI call is **stateless**, so every round the orchestrator packs the *current full document*
+into the prompt and lets the next agent speak. The shared `DISCUSSION.md` is the broadcast bus, the
+audit trail, and the final artifact all at once — and you can edit it by hand between turns.
+
+## Reliability
+
+- **Timeouts actually fire.** Reader/writer threads avoid a large-prompt↔stdout pipe deadlock; a
+  single monotonic deadline (`per_turn_timeout`) escalates SIGTERM → grace → SIGKILL on the whole
+  process group.
+- **Failures aren't published as speech.** A timed-out / non-zero CLI becomes a labelled *failure
+  record*; a round containing a failure can never be declared converged.
+- **Verdicts are robust and observable.** The organizer's last non-empty line must be
+  `{"consensus_reached": "Yes"|"No", …}`; a parse failure is logged to stderr and treated as No
+  (so a prompt drift can't silently burn every round).
+- **The document can't be forged.** `append` escapes body lines that mimic `## [` headings or the
+  `· #N ·` sequence marker; `next_seq` reads real heading lines only.
+- **Resumable, non-destructive.** `--resume` continues from the last complete round; it refuses on a
+  topic mismatch and skips an already-finished doc.
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+python3 -m pytest
+```
+
+`tests/` covers driver timeout/kill, outfile handling, verdict parsing, document anti-forgery,
+failure-blocks-convergence, `--resume`, the size warning, and config validation.
+
+## Project layout
+
+```
+run.py                 entry point (folder-per-run, tmux wall, orchestration)
+configs/               example / mock / design / plan / review2 YAML configs
+src/
+  config.py            YAML load + validation
+  drivers.py           CLI invocation -> DriverResult(text,status,error); timeout / process-group kill
+  document.py          SharedDoc: init / read / heading-only next_seq / anti-forgery append / resume introspection
+  prompts.py           opening / turn / review(JSON verdict) / final-report templates
+  agent.py             role + driver + log
+  orchestrator.py      moderator-led rounds, failure-aware convergence, human turns
+tools/mock_cli.py      fake CLI for the zero-cost smoke test
+tests/                 pytest suite
+```
+
+## Known trade-offs
+
+- **Cost** grows with rounds × agents × document length (the full doc is re-sent each round). Keep
+  `max_rounds` / `turn_word_limit` modest; a size warning fires past `context_warn_chars`. True
+  context capping / summarization is intentionally deferred.
+- **No per-agent memory** — context lives entirely in the shared doc (auditable, controllable).
+- **Serial turns** by design (easy to watch and to write the doc); parallelism would need work.
+- **POSIX process-group kill** — `_kill()` uses `os.killpg`/`SIGKILL`; Windows support is deferred.
 
 ---
 
-让本地的多个 CLI agent（codex、claude code……）**围绕一份共享 Markdown 文档**开圆桌讨论：
-一个**组织者**主持，若干**讨论者**按角色轮流在文档末尾追加署名发言，组织者每轮裁决是否收敛，
-最后给出结论。整场讨论就是一份可 git、可人肉编辑的 `DISCUSSION.md`。
+<details>
+<summary>中文简介</summary>
 
-结构借鉴多智能体辩论框架 [MAD (Multi-Agents-Debate)](https://github.com/Skytliang/Multi-Agents-Debate)：
-`moderator + players + 多轮 + JSON 裁决`，但把 MAD 的"记忆广播"换成了**共享文档广播**，
-并用你本机真实的 CLI 来驱动每个 agent。
+让本地的多个 CLI agent（Claude Code、Codex……）**围绕一份共享 Markdown 文档**开圆桌辩论：
+组织者开场 → 讨论者按角色轮流在文末追加署名发言 → 组织者每轮用一行 JSON 裁决是否收敛 →
+产出一份中文/英文最终报告。整场讨论就是一份可 git、可人肉编辑的 `DISCUSSION.md`。
 
-```
-        DISCUSSION.md  ← 唯一真相源 / 广播总线 / 最终产物
-   ┌─────────┬─────────┬─────────┐
-   │  chair  │  alice  │   bob   │  ...每个 agent 一个 tmux pane
-   │ 组织者   │ (codex) │(claude) │     实时看它们往文档里写
-   └─────────┴─────────┴─────────┘
-```
+上手：`pip install -r requirements.txt` → `python3 run.py --config configs/mock.yaml`（零成本试跑）→
+装好并登录 `claude`/`codex` 后 `python3 run.py --config configs/example.yaml`。每次运行存到
+`discussions/<议题>/<时间戳>/`（含讨论全文、各 agent 日志、config 快照）。角色/数量/驱动/议题全在 YAML 里改，不动代码。
 
-## 它怎么工作
+可靠性、`--resume`、退出码等细节见上面的英文章节。
+</details>
 
-CLI 每次调用是**无状态**的，所以每一轮编排器都把 `DISCUSSION.md` 的**当前全文**塞进 prompt，
-再让下一个 agent 发言。于是：
+## License
 
-- **共享文档 = 广播总线**：每个 agent 读全文 → 追加自己的发言 → 下一位读到（含你的手动编辑）。
-- **组织者 = MAD 的 moderator**：开场拆题 → 每轮结束输出小结 + **最后一行** JSON 裁决
-  `{"consensus_reached": "Yes/No", "reason": ..., "current_answer": ...}` → `Yes` 且本轮无失败才收敛。
-- **人类随时插话**：直接编辑 `DISCUSSION.md`，或加 `--interactive` 让每轮结束时停下等你输入。
-- **可靠**：纯文件读写 + 非交互 CLI，不抓 TUI 屏幕；CLI 调用有超时+进程组 kill、失败被记为失败记录而非当作发言、文档做防伪造清洗（见「可靠性」）。
-
-## 快速开始
-
-```bash
-pip install -r requirements.txt          # 运行只依赖 PyYAML
-
-# 1) 零成本冒烟测试（假 CLI，不花 token）
-python3 run.py --config config.mock.yaml
-tmux attach -t agent-debate-cli-mock         # 另开终端围观
-
-# 2) 真跑（本机需装好 codex + claude 并登录）
-python3 run.py                            # 用 config.example.yaml
-tmux attach -t agent-debate-cli
-
-# 每轮结束停下让你插话
-python3 run.py --interactive
-
-# 崩了/中断后，从上次的完整轮界续跑（不清空、topic 必须匹配）
-python3 run.py --config config.example.yaml --resume discussions/<topic>/<时间戳>/DISCUSSION.md
-
-# 跑测试
-pip install -r requirements-dev.txt && python3 -m pytest
-```
-
-每次运行按议题分文件夹存到 `discussions/<topic>/<时间戳>/`，里面有：讨论全文 `DISCUSSION.md`、
-各 agent 原始输出流 `<name>.log`、以及**本次用的 config 快照**（复现用）。`discussions/` 已在 `.gitignore`。
-
-## 配置（`config.example.yaml`）
-
-```yaml
-topic: "讨论的议题"
-language: "English"          # 辩论语言
-report_language: "中文"       # 组织者最终报告的语言（不填则同 language）
-max_rounds: 3               # 最多几轮；组织者裁决 Yes 且本轮无失败会提前收敛
-turn_word_limit: 200
-output_dir: "discussions"    # 按 topic 自动分文件夹的根目录（留空 document 即用此模式）
-session: "agent-debate-cli"  # tmux 会话名
-
-drivers:                     # 怎么以非交互方式调用某个 CLI
-  claude: { cmd: ["claude", "-p", "--output-format", "text"], mode: stdin }
-  codex:  { cmd: ["codex", "exec", "--output-last-message", "{outfile}", "-"], mode: stdin }
-  # mode: stdin -> prompt 走标准输入；mode: arg -> 作为末尾参数（用 {prompt} 占位）
-  # {outfile} -> 驱动读这个临时文件当"干净结果"，脏 stdout 只进日志（codex 的 banner/回显需要）
-
-organizer:                   # 组织者 / 主持人
-  name: chair
-  driver: claude
-  role: "你是圆桌讨论的组织者……"
-
-agents:                      # 讨论者，数量随意，增删即可
-  - { name: alice, driver: codex,  role: "偏好简单方案的系统工程师" }
-  - { name: bob,   driver: claude, role: "关注安全与稳定性的评审" }
-  - { name: carol, driver: codex,  role: "代表开发者体验" }
-```
-
-加人就往 `agents` 里加一项；换角色改 `role`；混用不同 CLI 改 `driver`。
-仓库自带几个 config：`config.example.yaml`（通用）、`config.mock.yaml`（零成本测试）、
-`config.design.yaml`（评审本 repo）、`config.plan.yaml`（把评审结论落成实施计划）。
-
-## 适配你本机的 CLI
-
-`drivers.cmd` 要能"给一段文字、返回一段文字"。上真跑前先手动验一下非交互模式：
-
-```bash
-echo "用一句话介绍你自己" | claude -p --output-format text
-echo "用一句话介绍你自己" | codex exec -        # 末尾 - = 整个 prompt 从 stdin 读
-```
-
-能返回文本就能接。不同版本参数可能不同，按实际改 `cmd`。
-（claude 若卡在权限询问，给它加 `--permission-mode dontAsk --allowedTools ""`，先 `claude --help` 核对取值。）
-
-## 目录结构
-
-```
-run.py                 入口：分文件夹存盘 + 装配 tmux 观众席 + 启动编排
-config.*.yaml          example / mock / design / plan 四套配置
-requirements.txt       运行依赖（PyYAML）
-requirements-dev.txt   测试依赖（pytest）
-src/
-  config.py            读取/校验 YAML
-  drivers.py           调用 CLI，返回 DriverResult(text,status,error)；超时/进程组 kill/清洗
-  document.py          SharedDoc：初始化/读全文/只认标题的序号/防伪造追加
-  prompts.py           开场/发言/小结(JSON裁决)/最终报告 模板
-  agent.py             角色 + 驱动 + 日志
-  orchestrator.py      组织者主持的多轮主循环 + 失败不收敛 + 人类插话
-tools/
-  mock_cli.py          假 CLI，供冒烟测试
-tests/
-  test_pr1.py          驱动/裁决/文档完整性/收敛 的回归测试
-discussions/<topic>/<时间戳>/   每次运行的产物（DISCUSSION.md + 各 .log + config 快照）
-```
-
-## 可靠性
-
-- **调用超时真的会触发**：`drivers.py` 用 reader/writer 线程避免大 prompt 与 stdout 的管道死锁，
-  单调 deadline == `per_turn_timeout`（总墙钟预算），到期 SIGTERM→等 grace→SIGKILL 杀整个进程组。
-- **失败不当发言**：CLI 超时/非零退出会写成清晰的「失败记录」而非把报错/横幅当作发言；
-  含失败轮次的这一轮永不判定收敛（`reached = 裁决Yes and 本轮无失败`）。
-- **裁决稳**：`_parse_verdict` 只取**最后一非空行** `json.loads` 并校验 `consensus_reached ∈ {Yes,No}`，
-  解析失败默认 No（宁可多一轮，不假收敛）。
-- **文档不可伪造**：`append` 会转义正文里伪造的 `## [` 标题与 `· #N ·` 序号标记；`next_seq` 只认真标题行。
-- **可续跑、不自毁**：默认每次新建文档；`--resume <DISCUSSION.md>` 从上次的**完整轮界**接着跑，
-  topic 不匹配会拒绝，已有最终报告则直接跳过——崩溃或中断后不丢历史与人类编辑。
-- **上下文体积告警**：每轮把全文喂给 agent 前，超过 `context_warn_chars`（默认 20 万字符）会只读地提醒一次。
-
-## 已知取舍
-
-- **成本**：真跑每轮都把整份文档发给每个 agent，token 随轮数、人数、文档长度增长。
-  用 `max_rounds`、`turn_word_limit` 控规模，先 mock 跑通再上真 CLI。（上下文封顶/摘要属后续 PR2。）
-- **无会话记忆**：刻意用非交互模式，agent 不保留自己的历史——上下文全在共享文档里，更可控、可审计。
-- **串行发言**：按"圆桌"直觉一个接一个，便于观看与写文档；要并行需自行改造。
-- **上下文增长**：目前只做体积告警；真正的上下文封顶/摘要仍待后续（见「可靠性」）。
+MIT — see [LICENSE](LICENSE).

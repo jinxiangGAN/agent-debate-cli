@@ -2,8 +2,8 @@
 """共享文档圆桌讨论 · 入口。
 
 用法：
-    python3 run.py                            # 用 config.example.yaml（真实 CLI）
-    python3 run.py --config config.mock.yaml  # 零成本冒烟测试
+    python3 run.py                            # 用 configs/example.yaml（真实 CLI）
+    python3 run.py --config configs/mock.yaml  # 零成本冒烟测试
     python3 run.py --interactive              # 每轮结束后停下，让你插话
     python3 run.py --no-tmux                  # 不开 tmux 观众席
 
@@ -39,7 +39,7 @@ def slugify(topic: str, maxlen: int = 40) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="共享 md 文档 · 多 agent 圆桌讨论")
-    ap.add_argument("--config", default="config.example.yaml")
+    ap.add_argument("--config", default="configs/example.yaml")
     ap.add_argument("--interactive", action="store_true", help="每轮结束后暂停让人类插话")
     ap.add_argument("--no-tmux", action="store_true", help="不启动 tmux 观众席")
     ap.add_argument("--resume", metavar="DISCUSSION.md",
@@ -108,6 +108,11 @@ def main() -> int:
     print(f"\n  ✅ 讨论结束。完整记录：{os.path.abspath(doc_path)}")
     if wall:
         print(f"  （tmux 会话 {cfg.session} 仍在，看完可 tmux kill-session -t {cfg.session}）")
+
+    if not orch.converged:
+        # 耗尽 max_rounds 仍未收敛：以退出码 2 通知 CI/脚本/cron（区别于错误退出码 1）
+        print("  ⚠️ 未在 max_rounds 内收敛（consensus_reached 从未为 Yes）。", file=sys.stderr)
+        return 2
     return 0
 
 

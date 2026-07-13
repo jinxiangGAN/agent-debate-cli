@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-debate-cli"
+version = "0.1.0"
+description = "Make your local CLI agents (Claude Code, Codex, …) debate a topic in a shared Markdown document."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["multi-agent-debate", "llm-debate", "agent", "claude-code", "codex", "tmux", "cli", "markdown"]
+dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+agent-debate = "run:main"
+
+[tool.setuptools]
+py-modules = ["run"]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"

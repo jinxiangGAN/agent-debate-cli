@@ -23,7 +23,7 @@ def _fake(orch, organizer_fn, worker_fn):
 
 
 def test_resume_skips_completed_rounds(tmp_path):
-    cfg = Config.load("config.mock.yaml")
+    cfg = Config.load("configs/mock.yaml")
     cfg.max_rounds = 2
     cfg.document = str(tmp_path / "D.md")
 
@@ -48,7 +48,7 @@ def test_resume_skips_completed_rounds(tmp_path):
 
 
 def test_resume_refuses_topic_mismatch(tmp_path):
-    cfg = Config.load("config.mock.yaml")
+    cfg = Config.load("configs/mock.yaml")
     cfg.document = str(tmp_path / "D.md")
     d = SharedDoc(cfg.document, "a completely different topic")
     d.append("chair", "Organizer · Opening", "o")
@@ -59,7 +59,7 @@ def test_resume_refuses_topic_mismatch(tmp_path):
 
 
 def test_resume_noop_when_already_complete(tmp_path):
-    cfg = Config.load("config.mock.yaml")
+    cfg = Config.load("configs/mock.yaml")
     cfg.document = str(tmp_path / "D.md")
     d = SharedDoc(cfg.document, cfg.topic)
     d.append("chair", "Organizer · Opening", "o")
@@ -72,7 +72,7 @@ def test_resume_noop_when_already_complete(tmp_path):
 
 
 def test_context_size_warning(tmp_path, capsys):
-    cfg = Config.load("config.mock.yaml")
+    cfg = Config.load("configs/mock.yaml")
     cfg.context_warn_chars = 50            # tiny threshold -> the header alone trips it
     cfg.document = str(tmp_path / "D.md")
     orch = Orchestrator(cfg, str(tmp_path))

@@ -7,6 +7,7 @@
 from __future__ import annotations
 import json
 import re
+import sys
 
 from .config import Config
 from .agent import Agent
@@ -15,11 +16,13 @@ from .document import SharedDoc
 from . import prompts
 
 
-def _parse_verdict(text: str) -> tuple[bool, str]:
+def _parse_verdict(text: str) -> tuple[bool, bool, str]:
     """裁决解析：取**最后一非空行**做 json.loads，校验 consensus_reached 精确 ∈ {Yes,No}。
 
-    prompt 已要求把 JSON 单独放在最后一行，所以不再用会漏嵌套花括号的正则；
-    解析失败一律返回 (False, 诊断)——宁可多讨论一轮，也不要静默假收敛。
+    返回 (reached, parsed_ok, detail)：
+    - parsed_ok=True  -> 成功解析出合法裁决；reached 为 Yes/No，detail 是 reason。
+    - parsed_ok=False -> 解析/校验失败（宁可当 No 也不假收敛）；detail 是诊断信息。
+      区分这两者，是为了只在**真正失败**时告警，而不是把合法的 "No" 也当异常。
     """
     for line in reversed(text.splitlines()):
         line = line.strip()
@@ -28,14 +31,14 @@ def _parse_verdict(text: str) -> tuple[bool, str]:
         try:
             obj = json.loads(line)
         except (json.JSONDecodeError, TypeError):
-            return False, f"verdict parse failed (last non-empty line is not JSON): {line[:160]}"
+            return False, False, f"last non-empty line is not JSON: {line[:160]}"
         if not isinstance(obj, dict):
-            return False, "verdict JSON is not an object"
+            return False, False, "verdict JSON is not an object"
         val = str(obj.get("consensus_reached", "")).strip()
         if val not in ("Yes", "No"):
-            return False, f"invalid consensus_reached value: {val!r}"
-        return val == "Yes", str(obj.get("reason", ""))
-    return False, "empty verdict"
+            return False, False, f"invalid consensus_reached value: {val!r}"
+        return val == "Yes", True, str(obj.get("reason", ""))
+    return False, False, "empty verdict (no JSON line found)"
 
 
 class Orchestrator:
@@ -47,6 +50,7 @@ class Orchestrator:
         self._human_input = human_input
         self.reset = reset
         self._warned_size = False
+        self.converged = False   # True once a round reaches consensus (or resume finds a final report)
         self.doc = SharedDoc(cfg.document, cfg.topic, reset=reset)
 
         drivers = {name: Driver(spec) for name, spec in cfg.drivers.items()}
@@ -112,6 +116,7 @@ class Orchestrator:
                     f"cannot resume: document topic {existing_topic!r} != config topic {c.topic!r}")
             if self.doc.has_final_report():
                 print("  ✔️ 该讨论已有最终报告，无需续跑。", flush=True)
+                self.converged = True
                 return self.doc.path
             start_round = self.doc.count_round_summaries() + 1
             print(f"  ↻ resume：已完成 {start_round - 1} 轮，从第 {start_round} 轮继续。", flush=True)
@@ -158,9 +163,17 @@ class Orchestrator:
 
             # A round with a failed turn can never converge (avoid false consensus on a
             # crippled round); a failed organizer review also can't declare Yes.
-            parsed, _ = _parse_verdict(review.text) if review_ok else (False, "review failed")
-            reached = review_ok and parsed and not round_failed
-            if reached:
+            if review_ok:
+                reached, parsed_ok, detail = _parse_verdict(review.text)
+                if not parsed_ok:
+                    # Observability floor: a silent parse failure would burn every round
+                    # (and full-doc tokens) forever without ever converging. Surface it.
+                    print(f"  ⚠️ round {round_no}: could not parse the organizer verdict "
+                          f"({detail}) — treating as 'No'.", file=sys.stderr, flush=True)
+            else:
+                reached = False
+            if review_ok and reached and not round_failed:
+                self.converged = True
                 break
             self._maybe_human_turn(round_no)
 

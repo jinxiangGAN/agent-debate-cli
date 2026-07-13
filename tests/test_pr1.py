@@ -99,7 +99,7 @@ class _FakeDriver:
 
 
 def test_failed_worker_cannot_converge_even_if_organizer_says_yes(tmp_path):
-    cfg = Config.load("config.mock.yaml")
+    cfg = Config.load("configs/mock.yaml")
     cfg.max_rounds = 2
     cfg.document = str(tmp_path / "D.md")
     orch = Orchestrator(cfg, str(tmp_path))
