@@ -40,12 +40,14 @@ def _parse_verdict(text: str) -> tuple[bool, str]:
 
 class Orchestrator:
     def __init__(self, cfg: Config, log_dir: str, interactive: bool = False,
-                 human_input=input):
+                 human_input=input, reset: bool = True):
         self.cfg = cfg
         self.log_dir = log_dir
         self.interactive = interactive
         self._human_input = human_input
-        self.doc = SharedDoc(cfg.document, cfg.topic, reset=True)
+        self.reset = reset
+        self._warned_size = False
+        self.doc = SharedDoc(cfg.document, cfg.topic, reset=reset)
 
         drivers = {name: Driver(spec) for name, spec in cfg.drivers.items()}
         self.organizer = Agent(cfg.organizer, drivers[cfg.organizer.driver], log_dir)
@@ -73,6 +75,17 @@ class Orchestrator:
         self.doc.append(author, f"{label} · FAILED", body)
         return False
 
+    def _context(self) -> str:
+        """读文档全文（即喂给下一个 prompt 的上下文），过大时只读地告警一次。"""
+        text = self.doc.read()
+        limit = self.cfg.context_warn_chars
+        if limit and len(text) > limit and not self._warned_size:
+            self._warned_size = True
+            print(f"  ⚠️ 上下文已达 {len(text):,} 字符（阈值 {limit:,}）——"
+                  f"每轮都会把全文发给每个 agent，token 成本随之上升。"
+                  f"可调小 max_rounds/turn_word_limit，或分拆议题。", flush=True)
+        return text
+
     def _maybe_human_turn(self, round_no: int) -> None:
         if not self.interactive:
             return
@@ -89,30 +102,43 @@ class Orchestrator:
     def run(self) -> str:
         c = self.cfg
 
-        # 0) Optional background material: written first so every agent reads it
-        if c.context.strip():
-            self.doc.append("Background", "for reference", c.context.strip())
-
-        # 1) Organizer opening
-        opening = self.organizer.run(
-            "Opening",
-            prompts.organizer_opening(
-                c.organizer.role, c.topic, c.language,
-                self.doc.read(), [w.name for w in self.workers],
-            ),
-            c.per_turn_timeout,
-        )
-        self._append_result(self.organizer.name, "Organizer · Opening", opening)
+        # 0) Resume vs fresh. Resume only from a doc with a matching topic; skip the
+        #    opening and any already-complete rounds. Never infer partial turn-status.
+        resuming = (not self.reset) and self.doc.has_opening()
+        if resuming:
+            existing_topic = self.doc.header_topic()
+            if existing_topic != c.topic:
+                raise ValueError(
+                    f"cannot resume: document topic {existing_topic!r} != config topic {c.topic!r}")
+            if self.doc.has_final_report():
+                print("  ✔️ 该讨论已有最终报告，无需续跑。", flush=True)
+                return self.doc.path
+            start_round = self.doc.count_round_summaries() + 1
+            print(f"  ↻ resume：已完成 {start_round - 1} 轮，从第 {start_round} 轮继续。", flush=True)
+        else:
+            start_round = 1
+            # Background material, then the organizer opening (fresh run only)
+            if c.context.strip():
+                self.doc.append("Background", "for reference", c.context.strip())
+            opening = self.organizer.run(
+                "Opening",
+                prompts.organizer_opening(
+                    c.organizer.role, c.topic, c.language,
+                    self._context(), [w.name for w in self.workers],
+                ),
+                c.per_turn_timeout,
+            )
+            self._append_result(self.organizer.name, "Organizer · Opening", opening)
 
         # 2) Debate rounds
-        for round_no in range(1, c.max_rounds + 1):
+        for round_no in range(start_round, c.max_rounds + 1):
             round_failed = False
             for w in self.workers:
                 reply = w.run(
                     f"Round {round_no}",
                     prompts.agent_turn(
                         w.spec.role, c.topic, c.language,
-                        self.doc.read(), c.turn_word_limit, w.name,
+                        self._context(), c.turn_word_limit, w.name,
                     ),
                     c.per_turn_timeout,
                 )
@@ -123,7 +149,7 @@ class Orchestrator:
                 f"Round {round_no} verdict",
                 prompts.organizer_review(
                     c.organizer.role, c.topic, c.language,
-                    self.doc.read(), round_no, c.max_rounds,
+                    self._context(), round_no, c.max_rounds,
                 ),
                 c.per_turn_timeout,
             )
@@ -141,7 +167,7 @@ class Orchestrator:
         # 3) Organizer final report
         final = self.organizer.run(
             "Final report",
-            prompts.organizer_final(c.organizer.role, c.topic, c.report_language, self.doc.read()),
+            prompts.organizer_final(c.organizer.role, c.topic, c.report_language, self._context()),
             c.per_turn_timeout,
         )
         self._append_result(self.organizer.name, "Organizer · Final report", final)

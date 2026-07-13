@@ -50,6 +50,9 @@ tmux attach -t agent-debate-cli
 # 每轮结束停下让你插话
 python3 run.py --interactive
 
+# 崩了/中断后，从上次的完整轮界续跑（不清空、topic 必须匹配）
+python3 run.py --config config.example.yaml --resume discussions/<topic>/<时间戳>/DISCUSSION.md
+
 # 跑测试
 pip install -r requirements-dev.txt && python3 -m pytest
 ```
@@ -131,6 +134,9 @@ discussions/<topic>/<时间戳>/   每次运行的产物（DISCUSSION.md + 各 .
 - **裁决稳**：`_parse_verdict` 只取**最后一非空行** `json.loads` 并校验 `consensus_reached ∈ {Yes,No}`，
   解析失败默认 No（宁可多一轮，不假收敛）。
 - **文档不可伪造**：`append` 会转义正文里伪造的 `## [` 标题与 `· #N ·` 序号标记；`next_seq` 只认真标题行。
+- **可续跑、不自毁**：默认每次新建文档；`--resume <DISCUSSION.md>` 从上次的**完整轮界**接着跑，
+  topic 不匹配会拒绝，已有最终报告则直接跳过——崩溃或中断后不丢历史与人类编辑。
+- **上下文体积告警**：每轮把全文喂给 agent 前，超过 `context_warn_chars`（默认 20 万字符）会只读地提醒一次。
 
 ## 已知取舍
 
@@ -138,4 +144,4 @@ discussions/<topic>/<时间戳>/   每次运行的产物（DISCUSSION.md + 各 .
   用 `max_rounds`、`turn_word_limit` 控规模，先 mock 跑通再上真 CLI。（上下文封顶/摘要属后续 PR2。）
 - **无会话记忆**：刻意用非交互模式，agent 不保留自己的历史——上下文全在共享文档里，更可控、可审计。
 - **串行发言**：按"圆桌"直觉一个接一个，便于观看与写文档；要并行需自行改造。
-- **非破坏/续跑**：目前每次启动会重建文档；`--resume` 与上下文体积告警是规划中的 PR2。
+- **上下文增长**：目前只做体积告警；真正的上下文封顶/摘要仍待后续（见「可靠性」）。

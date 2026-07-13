@@ -42,6 +42,8 @@ def main() -> int:
     ap.add_argument("--config", default="config.example.yaml")
     ap.add_argument("--interactive", action="store_true", help="每轮结束后暂停让人类插话")
     ap.add_argument("--no-tmux", action="store_true", help="不启动 tmux 观众席")
+    ap.add_argument("--resume", metavar="DISCUSSION.md",
+                    help="从一份已存在的 DISCUSSION.md 续跑（不清空、只在完整轮界继续）")
     args = ap.parse_args()
 
     root = os.path.dirname(os.path.abspath(__file__))
@@ -50,7 +52,16 @@ def main() -> int:
     cfg = Config.load(args.config)
 
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-    if cfg.document:
+    reset = True
+    if args.resume:
+        # 续跑：文档=指定文件，日志写同目录，绝不清空
+        cfg.document = os.path.abspath(args.resume)
+        if not os.path.exists(cfg.document):
+            print(f"  ✗ 找不到要续跑的文档：{cfg.document}")
+            return 1
+        log_dir = os.path.dirname(cfg.document)
+        reset = False
+    elif cfg.document:
         # 固定输出模式（config 里显式写了 document）：文档用该路径，日志放 logs/<时间戳>/
         log_dir = os.path.join(root, "logs", run_id)
     else:
@@ -60,13 +71,19 @@ def main() -> int:
         log_dir = run_dir
     os.makedirs(log_dir, exist_ok=True)
 
-    # 把本次运行用到的 config 快照进结果文件夹，方便复现
+    # 把本次运行用到的 config 快照进结果文件夹，方便复现（续跑不覆盖已有快照）
     try:
-        shutil.copy(args.config, os.path.join(log_dir, os.path.basename(args.config)))
+        snap = os.path.join(log_dir, os.path.basename(args.config))
+        if not (args.resume and os.path.exists(snap)):
+            shutil.copy(args.config, snap)
     except OSError:
         pass
 
-    orch = Orchestrator(cfg, log_dir, interactive=args.interactive)
+    try:
+        orch = Orchestrator(cfg, log_dir, interactive=args.interactive, reset=reset)
+    except ValueError as e:
+        print(f"  ✗ {e}")
+        return 1
 
     wall = None
     if not args.no_tmux and tmuxio.available():
@@ -82,7 +99,11 @@ def main() -> int:
     print(f"  共享文档：{os.path.abspath(cfg.document)}")
     print(f"  日志目录：{log_dir}\n  讨论进行中……\n")
 
-    doc_path = orch.run()
+    try:
+        doc_path = orch.run()
+    except ValueError as e:
+        print(f"  ✗ {e}")
+        return 1
 
     print(f"\n  ✅ 讨论结束。完整记录：{os.path.abspath(doc_path)}")
     if wall:

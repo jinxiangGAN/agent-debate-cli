@@ -34,6 +34,29 @@ class SharedDoc:
         with open(self.path, "r", encoding="utf-8") as f:
             return f.read()
 
+    # ---- resume introspection：只认 harness 自有的标题/H1，不推断 turn-status ----
+
+    def header_topic(self) -> str | None:
+        """从 H1 `# Roundtable debate: <topic>` 解析出议题，供 resume 校验。"""
+        for line in self.read().splitlines():
+            if line.startswith("# Roundtable debate: "):
+                return line[len("# Roundtable debate: "):].strip()
+        return None
+
+    def _labels(self) -> list[str]:
+        return re.findall(r"^## \[.*?\] (.*?) · #\d+ · ", self.read(), re.MULTILINE)
+
+    def has_opening(self) -> bool:
+        return "Organizer · Opening" in self._labels()
+
+    def has_final_report(self) -> bool:
+        return "Organizer · Final report" in self._labels()
+
+    def count_round_summaries(self) -> int:
+        """有几轮是**完整完成**的（有非失败的 organizer 小结）——resume 的轮界。"""
+        return sum(1 for lbl in self._labels()
+                   if re.fullmatch(r"Organizer · Round \d+ summary", lbl))
+
     # Only real harness-written heading lines look like: "## [author] label · #N · ts".
     # Parsing the sequence from *heading lines only* means a body containing "· #99 ·"
     # can no longer poison next_seq (the #13 -> #100 bug seen in real runs).

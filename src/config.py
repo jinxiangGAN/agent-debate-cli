@@ -26,6 +26,7 @@ class Config:
     max_rounds: int
     turn_word_limit: int
     per_turn_timeout: int
+    context_warn_chars: int   # warn (read-only) when the doc fed to a prompt exceeds this
     document: str          # 固定输出路径；留空则按 topic 自动分文件夹
     output_dir: str        # 自动模式下的根目录（discussions/<topic>/<时间戳>/）
     session: str
@@ -67,6 +68,7 @@ class Config:
             max_rounds=int(raw.get("max_rounds", 3)),
             turn_word_limit=int(raw.get("turn_word_limit", 200)),
             per_turn_timeout=int(raw.get("per_turn_timeout", 300)),
+            context_warn_chars=int(raw.get("context_warn_chars", 200_000)),
             document=raw.get("document", "") or "",
             output_dir=raw.get("output_dir", "discussions"),
             session=raw.get("session", "agent-debate-cli"),
