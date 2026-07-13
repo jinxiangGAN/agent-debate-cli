@@ -1,0 +1,47 @@
+# ===== 讨论主题与全局设置 =====
+topic: "我们该如何为一个公开 API 设计限流（rate limiter）？"
+language: "中文"
+max_rounds: 3               # 最多几轮；组织者裁决 consensus_reached=Yes 时提前结束
+turn_word_limit: 200        # 每次发言字数上限
+per_turn_timeout: 300       # 单个 agent 一次调用超时（秒）
+
+document: "DISCUSSION.md"    # 共享讨论文档（既是总线也是最终产物）
+session: "agent-debate-cli"     # tmux 会话名：tmux attach -t agent-debate-cli
+
+# ===== 驱动：怎么以非交互方式调用某个 CLI =====
+#   mode: stdin -> prompt 从标准输入喂入
+#   mode: arg   -> prompt 作为最后一个参数（cmd 里用 {prompt} 占位）
+drivers:
+  claude:
+    # -p = 非交互 print 模式，prompt 从 stdin 读入，返回纯文本。
+    # 如果真跑时 claude 卡在权限询问上，把下面这行换成带权限旗标的版本：
+    #   cmd: ["claude", "-p", "--output-format", "text", "--permission-mode", "dontAsk", "--allowedTools", ""]
+    #   （先 `claude --help` 核对你本机版本的 permission-mode 取值）
+    cmd: ["claude", "-p", "--output-format", "text"]
+    mode: stdin
+  codex:
+    cmd: ["codex", "exec", "-"]   # 末尾的 "-" 表示"整个 prompt 从 stdin 读入"
+    mode: stdin
+  mock:
+    cmd: ["python3", "tools/mock_cli.py"]
+    mode: stdin
+
+# ===== 组织者（对应 MAD 的 moderator）=====
+organizer:
+  name: chair
+  driver: claude
+  role: >
+    你是一场技术圆桌讨论的组织者/主持人。你负责开场拆解议题、每轮结束评估讨论进展、
+    在形成足够清晰的结论时收敛并给出最终方案。你不代替其他人发言，保持中立。
+
+# ===== 讨论者（可增删，数量随意）=====
+agents:
+  - name: alice
+    driver: codex
+    role: "你是一名资深系统工程师，偏好简单、可运维的方案，警惕过度设计。"
+  - name: bob
+    driver: claude
+    role: "你是一名安全与稳定性评审，关注滥用、突发流量、故障隔离与降级。"
+  - name: carol
+    driver: codex
+    role: "你代表开发者体验，关注 API 的可预期性、错误信息、限流额度的透明度。"
