@@ -1,0 +1,97 @@
+# One manager + one codex + one claude debating the design of THIS repo (agent-debate-cli).
+#   python3 run.py --config config.design.yaml
+#
+# Agents are stateless calls, so they don't know the repo by default. The `context`
+# below seeds the design brief into the shared doc. They may also read the real source
+# files (see the note inside context). To feed the full README instead, replace `context`
+# with:  context_file: "README.md"
+
+topic: "What are the most important engineering improvements agent-debate-cli needs?"
+language: "English"           # language of the debate itself
+report_language: "中文"        # the manager's final report is written in Chinese
+max_rounds: 4                 # room to cover all three decision points before converging
+turn_word_limit: 260
+per_turn_timeout: 300
+output_dir: "discussions"
+session: "agent-debate-cli"
+
+context: >
+  [Project under review: agent-debate-cli]
+  Goal: let local CLI agents (Claude Code, Codex) debate a topic around a shared Markdown
+  document (DISCUSSION.md). Structure borrowed from MAD (moderator + players + rounds + JSON verdict).
+
+  Core architecture:
+  - SharedDoc(DISCUSSION.md): both the "broadcast bus" and the final artifact. Each round every
+    agent reads the full document and appends a signed contribution.
+  - drivers: invoke the CLIs non-interactively (claude -p / codex exec -); each call is stateless,
+    output captured directly via subprocess.
+  - orchestrator: organizer opens -> N debaters take turns -> organizer emits a JSON verdict
+    {"consensus_reached":"Yes/No",...} each round -> final conclusion.
+  - tmuxio: one pane per agent tailing its output, plus one pane tailing DISCUSSION.md live.
+  - config: roles / count / driver / topic are all controlled by YAML, no code changes.
+
+  Known trade-offs: deliberately stateless (context lives in the doc; auditable but the full doc is
+  re-sent every round); serial turns (easy to watch and to write the doc); chose "shared document"
+  over "tmux screen-scraping" (reliable but no per-agent memory).
+
+  [You may read the source] The full source of this repo is in your current working directory.
+  When you need to verify a detail, read the files directly: README.md, run.py,
+  src/orchestrator.py, src/document.py, src/drivers.py, src/prompts.py, config.example.yaml.
+  Do not guess the implementation — read first, then critique.
+
+  Your task: identify the most important engineering improvements this repo needs, and argue about
+  which ones actually matter. Consider the full engineering picture — correctness and edge cases,
+  reliability and failure modes, cost/performance, maintainability and code quality, testing,
+  extensibility, developer experience, packaging/onboarding, and security. Ground every claim in the
+  actual code, be concrete about the fix and its cost, and PRIORITIZE ruthlessly — the goal is a
+  ranked, actionable improvement list, not a wish list. Do not just agree; where you see it
+  differently, say so and defend it.
+
+drivers:
+  claude:
+    # Enable read-only tools so claude can actually read the repo files; pre-approving them
+    # avoids permission prompts. If your claude version rejects a flag, run `claude --help`,
+    # or fall back to the discussion-only form: ["claude","-p","--output-format","text"]
+    cmd: ["claude", "-p", "--output-format", "text", "--allowedTools", "Read,Glob,Grep"]
+    mode: stdin
+  codex:
+    # codex exec can read the working-directory files by default (read-only review).
+    # --output-last-message {outfile} writes ONLY the final answer to a temp file, which the
+    # driver reads back — so the shared doc gets clean text, not codex's banner/prompt-echo/logs.
+    cmd: ["codex", "exec", "--output-last-message", "{outfile}", "-"]
+    mode: stdin
+
+organizer:
+  name: manager
+  driver: claude
+  role: >
+    You are the manager/chair of this engineering review. You are a FACILITATOR, not a designer:
+    do NOT propose improvement areas, decision points, or technical directions yourself, and do NOT
+    steer them toward any particular answer. Open by inviting codex_dev and claude_dev to each put
+    forward the improvements THEY think matter most, then let the agenda emerge from what they raise.
+    Your job each round is to SURFACE disagreement — name the single sharpest current dispute and
+    require the next round to push on it — and to drive PRIORITIZATION (which improvements matter most,
+    and why). Do not declare convergence until the participants have produced a concrete, ranked,
+    actionable improvement list with reasons (not a fuzzy "everyone likes it"); only then output
+    consensus_reached=Yes. Stay strictly neutral; make no technical choices for them.
+
+agents:
+  - name: codex_dev
+    driver: codex
+    role: >
+      You are the pragmatic, implementation-minded reviewer. You strongly favor simple, operable,
+      minimal-change solutions and you attack over-engineering. Rules: read the relevant source before
+      you critique, and cite specific files/functions (e.g. the run loop in src/orchestrator.py). For each
+      claim, state how you'd implement it, how much code it touches, the cost, and whether it's worth it.
+      When claude_dev proposes something more complex, challenge its necessity by default and demand it
+      prove the payoff. Do not concede unless given a reason you can't rebut; even when you agree, add a new
+      caveat or cost — never just echo.
+  - name: claude_dev
+    driver: claude
+    role: >
+      You are the architecture- and experience-minded reviewer. You care about extensibility, reliability,
+      debate quality, and long-term evolution. Rules: read the relevant source before you critique, and name
+      the concrete failure modes of the current design (e.g. cost of re-sending the full doc every round, the
+      misjudgment risk of a single JSON verdict), then propose alternatives with their trade-offs. Actively
+      rebut codex_dev's "simple is enough" stance with scenarios where it breaks. But when the simpler option
+      is genuinely better, say so and explain why — your goal is the best design, not complexity for its own sake.

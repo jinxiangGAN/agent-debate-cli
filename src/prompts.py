@@ -1,78 +1,103 @@
-"""Prompt 模板，结构借鉴 MAD（player meta-prompt + moderator 的 JSON 裁决）。
-
-和 MAD 的区别：这里不靠每个 agent 的私有记忆，而是把**共享文档全文**当上下文
-（对应 MAD 的 broadcast），所以每个模板都会带上 `doc_text`。
+"""Prompt templates. Structure borrowed from MAD (player meta-prompt +
+moderator JSON verdict). Unlike MAD, context is the **full shared document**
+(instead of each agent's private memory), so every template carries `doc_text`.
 """
 from __future__ import annotations
 
 
-# ---- 讨论者 ----
+# ---- Debater ----
 
 def agent_turn(role: str, topic: str, language: str, doc_text: str,
                word_limit: int, author: str) -> str:
     return f"""{role}
 
-你正在参加一场"共享文档"式的圆桌讨论。所有发言都写在同一份 Markdown 文档里，
-不必强行认同别人的观点——目标是把问题讨论清楚、逼近正确答案。
+You are taking part in a shared-document roundtable debate. All contributions are
+written into one Markdown document. You do NOT have to agree with others — the goal
+is to think the problem through and converge on the best answer.
 
-议题：{topic}
+Topic: {topic}
 
-下面是该文档的**当前完整内容**：
-<文档>
+Here is the **current full content** of the document:
+<document>
 {doc_text}
-</文档>
+</document>
 
-现在轮到你（署名：{author}）发言。要求：
-- 用 {language}，{word_limit} 字以内。
-- 读完整份文档，提出新论点，或明确回应/反驳前面某条发言（可点名是谁说的），不要重复已有内容。
-- **只输出你要追加的正文**：不要写 `## [xxx]` 这类标题行、不要复述文档、不要替别人发言（署名会由系统添加）。
-- 只以 {author} 的身份发言。"""
+It is now your turn (you sign as: {author}). Requirements:
+- Reply in {language}, within {word_limit} words.
+- Read the whole document, then add a NEW point or explicitly respond to / rebut a
+  specific earlier remark (you may name who said it). Do not repeat what's already there.
+- Output ONLY the body of your contribution: no `## [xxx]` heading line, no restating
+  the document, do not speak for others (the signature is added for you).
+- Speak only as {author}."""
 
 
-# ---- 组织者（对应 MAD 的 moderator）----
+# ---- Organizer (MAD's moderator) ----
 
 def organizer_opening(role: str, topic: str, language: str,
                       doc_text: str, speakers: list[str]) -> str:
     return f"""{role}
 
-你主持一场圆桌讨论，参与者：{", ".join(speakers)}。
+You are chairing a roundtable. Participants: {", ".join(speakers)}.
 
-议题：{topic}
+Topic: {topic}
 
-当前文档内容：
-<文档>
+Current document content:
+<document>
 {doc_text}
-</文档>
+</document>
 
-请你开场：用 {language} 把议题拆解成 2-3 个讨论要点，并说明希望各位重点回应哪些方面。
-{"" }120 字以内。只输出正文，不要写标题行，不要替别人发言。"""
+Please kick off the discussion: in {language}, briefly frame the topic and invite each
+participant to put forward the points THEY think matter most. Do NOT prescribe the agenda,
+the decision points, or the answers — let the participants surface the substance themselves.
+Keep it under 120 words. Output only the body — no heading line, do not speak for others."""
 
 
 def organizer_review(role: str, topic: str, language: str,
                      doc_text: str, round_no: int, max_rounds: int) -> str:
     return f"""{role}
 
-议题：{topic}
-这是第 {round_no}/{max_rounds} 轮讨论后，共享文档的完整内容：
-<文档>
+Topic: {topic}
+This is the full document after round {round_no}/{max_rounds}:
+<document>
 {doc_text}
-</文档>
+</document>
 
-你作为组织者，评估目前的讨论：是否已经就核心问题形成足够清晰的结论。
-先用 {language} 写一段小结（概括共识与主要分歧，120 字以内），
-然后**在最后另起一行**，严格输出如下 JSON（不要有多余内容）：
-{{"consensus_reached": "Yes 或 No", "reason": "一句话理由", "current_answer": "目前最可能的结论"}}
-consensus_reached 为 Yes 表示讨论可以收敛结束，No 表示还需再讨论一轮。"""
+As the organizer, assess the discussion: has it reached a clear enough conclusion on
+the core question? First write a short summary in {language} (consensus and the main
+disagreement, under 120 words). Then, **on a final separate line**, output EXACTLY this
+JSON (nothing else after it):
+{{"consensus_reached": "Yes or No", "reason": "one-line reason", "current_answer": "best current conclusion"}}
+consensus_reached = Yes means the debate can converge and end; No means one more round is needed."""
 
 
-def organizer_final(role: str, topic: str, language: str, doc_text: str) -> str:
+def organizer_final(role: str, topic: str, report_language: str, doc_text: str) -> str:
     return f"""{role}
 
-议题：{topic}
-以下是完整的讨论文档：
-<文档>
+Topic: {topic}
+Here is the complete discussion document:
+<document>
 {doc_text}
-</文档>
+</document>
 
-讨论结束。请你用 {language} 给出最终收尾：综合各方观点，输出一个清晰、可执行的结论。
-可以分点，但要具体。这段话代表本次圆桌的最终产出。只输出正文，不要写标题行。"""
+The debate is over. As the organizer, write a COMPREHENSIVE FINAL REPORT that consolidates
+everything discussed. Write the ENTIRE report in {report_language} (even if the debate above
+was in another language). Use this structure with Markdown headings:
+
+### 概述
+One paragraph: the topic and what was decided overall.
+
+### 各决策点结论
+For EVERY decision point raised (not only the ones that fully converged), give: the conclusion
+reached, who argued what, and any concession that settled it. If a point was left unresolved,
+say so explicitly and state the open question.
+
+### 关键分歧与如何化解
+The sharpest disagreements and how (or whether) they were resolved.
+
+### 最终可执行建议
+A concrete, actionable list — specific enough to implement (files/changes where relevant).
+
+### 未决事项
+Anything still open or deferred.
+
+Be specific and faithful to the actual arguments above. Output only the report body."""

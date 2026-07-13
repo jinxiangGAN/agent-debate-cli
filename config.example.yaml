@@ -1,47 +1,55 @@
-# ===== 讨论主题与全局设置 =====
-topic: "我们该如何为一个公开 API 设计限流（rate limiter）？"
-language: "中文"
-max_rounds: 3               # 最多几轮；组织者裁决 consensus_reached=Yes 时提前结束
-turn_word_limit: 200        # 每次发言字数上限
-per_turn_timeout: 300       # 单个 agent 一次调用超时（秒）
+# ===== Topic and global settings =====
+topic: "How should we design rate limiting for a public API?"
+language: "English"
+max_rounds: 3               # max rounds; ends early once organizer verdict consensus_reached=Yes
+turn_word_limit: 200        # word cap per contribution
+per_turn_timeout: 300       # per-agent per-call timeout (seconds)
 
-document: "DISCUSSION.md"    # 共享讨论文档（既是总线也是最终产物）
-session: "agent-debate-cli"     # tmux 会话名：tmux attach -t agent-debate-cli
+# Output location: leave `document` empty to auto-organize per topic into
+#   discussions/<topic>/<timestamp>/{DISCUSSION.md, <agent>.log}
+# To write to a fixed file instead, uncomment the next line:
+# document: "DISCUSSION.md"
+output_dir: "discussions"       # root dir for auto mode
+session: "agent-debate-cli"     # tmux session name: tmux attach -t agent-debate-cli
 
-# ===== 驱动：怎么以非交互方式调用某个 CLI =====
-#   mode: stdin -> prompt 从标准输入喂入
-#   mode: arg   -> prompt 作为最后一个参数（cmd 里用 {prompt} 占位）
+# ===== Drivers: how to invoke each CLI non-interactively =====
+#   mode: stdin -> prompt fed via standard input
+#   mode: arg   -> prompt as the last argument (use {prompt} placeholder in cmd)
 drivers:
   claude:
-    # -p = 非交互 print 模式，prompt 从 stdin 读入，返回纯文本。
-    # 如果真跑时 claude 卡在权限询问上，把下面这行换成带权限旗标的版本：
+    # -p = non-interactive print mode; prompt read from stdin, returns plain text.
+    # If claude stalls on a permission prompt during a real run, swap in the flagged form:
     #   cmd: ["claude", "-p", "--output-format", "text", "--permission-mode", "dontAsk", "--allowedTools", ""]
-    #   （先 `claude --help` 核对你本机版本的 permission-mode 取值）
+    #   (run `claude --help` first to confirm the permission-mode value on your version)
     cmd: ["claude", "-p", "--output-format", "text"]
     mode: stdin
   codex:
-    cmd: ["codex", "exec", "-"]   # 末尾的 "-" 表示"整个 prompt 从 stdin 读入"
+    # trailing "-" = read the whole prompt from stdin.
+    # --output-last-message {outfile}: driver reads the clean final answer from that temp file
+    # instead of codex's noisy stdout (banner / prompt echo / tool logs / duplicated answer).
+    cmd: ["codex", "exec", "--output-last-message", "{outfile}", "-"]
     mode: stdin
   mock:
     cmd: ["python3", "tools/mock_cli.py"]
     mode: stdin
 
-# ===== 组织者（对应 MAD 的 moderator）=====
+# ===== Organizer (MAD's moderator) =====
 organizer:
   name: chair
   driver: claude
   role: >
-    你是一场技术圆桌讨论的组织者/主持人。你负责开场拆解议题、每轮结束评估讨论进展、
-    在形成足够清晰的结论时收敛并给出最终方案。你不代替其他人发言，保持中立。
+    You are the organizer/chair of a technical roundtable. You open by breaking down the topic,
+    assess progress at the end of each round, and converge with a final plan once the discussion
+    reaches a clear enough conclusion. You do not speak for others; stay neutral.
 
-# ===== 讨论者（可增删，数量随意）=====
+# ===== Debaters (add/remove freely, any number) =====
 agents:
   - name: alice
     driver: codex
-    role: "你是一名资深系统工程师，偏好简单、可运维的方案，警惕过度设计。"
+    role: "A senior systems engineer who prefers simple, operable solutions and is wary of over-engineering."
   - name: bob
     driver: claude
-    role: "你是一名安全与稳定性评审，关注滥用、突发流量、故障隔离与降级。"
+    role: "A security and stability reviewer focused on abuse, traffic spikes, fault isolation and graceful degradation."
   - name: carol
     driver: codex
-    role: "你代表开发者体验，关注 API 的可预期性、错误信息、限流额度的透明度。"
+    role: "Represents developer experience: API predictability, error messages, and transparent rate-limit quotas."

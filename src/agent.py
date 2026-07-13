@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 from .config import AgentSpec
-from .drivers import Driver
+from .drivers import Driver, DriverResult
 
 
 class Agent:
@@ -16,7 +16,7 @@ class Agent:
     def name(self) -> str:
         return self.spec.name
 
-    def run(self, header: str, prompt: str, timeout: int) -> str:
+    def run(self, header: str, prompt: str, timeout: int) -> DriverResult:
         with open(self.log_path, "a", encoding="utf-8") as f:
             f.write(f"\n\033[1;36m▶ {header}\033[0m\n")
         return self.driver.invoke(prompt, self.log_path, timeout)

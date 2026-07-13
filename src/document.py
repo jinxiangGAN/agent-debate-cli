@@ -19,11 +19,11 @@ class SharedDoc:
 
     def _init_doc(self, topic: str) -> None:
         header = (
-            f"# 圆桌讨论：{topic}\n\n"
-            "> 这是一份**共享讨论文档**，也是所有参与者的唯一真相源。\n"
-            "> 每位参与者依次在文末追加署名发言；组织者负责主持与收敛。\n"
-            "> 你（人类）可以随时直接编辑本文件，用 `## [你] ...` 追加发言——下一位参与者会读到。\n\n"
-            f"开始时间：{datetime.now():%Y-%m-%d %H:%M:%S}\n\n"
+            f"# Roundtable debate: {topic}\n\n"
+            "> This is a **shared discussion document** and the single source of truth.\n"
+            "> Each participant appends a signed contribution in turn; the organizer chairs and converges.\n"
+            "> You (human) can edit this file anytime — add `## [You] ...` and the next participant will read it.\n\n"
+            f"Started: {datetime.now():%Y-%m-%d %H:%M:%S}\n\n"
             "---\n"
         )
         with open(self.path, "w", encoding="utf-8") as f:
@@ -34,16 +34,36 @@ class SharedDoc:
         with open(self.path, "r", encoding="utf-8") as f:
             return f.read()
 
+    # Only real harness-written heading lines look like: "## [author] label · #N · ts".
+    # Parsing the sequence from *heading lines only* means a body containing "· #99 ·"
+    # can no longer poison next_seq (the #13 -> #100 bug seen in real runs).
+    _HEADING_RE = re.compile(r"^## \[.*?\].* · #(\d+) · ", re.MULTILINE)
+
     def next_seq(self) -> int:
-        """扫描已有发言块的序号 `· #N ·`，返回下一个。"""
-        seqs = [int(m) for m in re.findall(r"·\s*#(\d+)\s*·", self.read())]
+        """下一个序号：只扫 harness 自有的标题行，不看正文。"""
+        seqs = [int(m) for m in self._HEADING_RE.findall(self.read())]
         return (max(seqs) + 1) if seqs else 1
 
+    @staticmethod
+    def _sanitize(content: str) -> str:
+        """中和正文里两种 harness 自有语法，防止模型伪造归属/毒化序号：
+        - 行首的 `## [`（伪造发言块标题）-> 前缀反斜杠转义
+        - `· #<数字> ·`（序号标记）-> 打断该模式（虽然 next_seq 已只读标题，双保险）
+        """
+        out = []
+        for line in content.splitlines():
+            if re.match(r"\s{0,3}## \[", line):
+                line = "\\" + line.lstrip()
+            line = re.sub(r"(·\s*#)(\d+\s*·)", "\\1​\\2", line)  # ZWSP breaks the seq grammar
+            out.append(line)
+        return "\n".join(out)
+
     def append(self, author: str, label: str, content: str) -> int:
-        """追加一条署名发言块，返回它的序号。"""
+        """追加一条署名发言块（正文经清洗），返回它的序号。"""
         seq = self.next_seq()
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-        block = f"\n## [{author}] {label} · #{seq} · {ts}\n\n{content.strip()}\n"
+        body = self._sanitize(content.strip())
+        block = f"\n## [{author}] {label} · #{seq} · {ts}\n\n{body}\n"
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(block)
         return seq

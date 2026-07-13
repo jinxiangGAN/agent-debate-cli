@@ -1,0 +1,87 @@
+# Follow-up debate: turn the AGREED improvement list (from the previous review) into a concrete
+# implementation plan. The "what to fix" is settled; this round decides "how, in what order, with
+# what tests and risks".
+#   python3 run.py --config config.plan.yaml
+
+topic: "Design the implementation plan for agent-debate-cli's agreed improvements: sequencing, approach, tests, risks"
+language: "English"
+report_language: "中文"        # final implementation plan is written in Chinese
+max_rounds: 4
+turn_word_limit: 280
+per_turn_timeout: 300
+output_dir: "discussions"
+session: "agent-debate-cli"
+
+context: >
+  [Project: agent-debate-cli] Local CLI agents (Claude Code, Codex) debate around a shared Markdown
+  doc (DISCUSSION.md). Core: SharedDoc (broadcast bus + artifact), drivers (non-interactive CLI via
+  subprocess), orchestrator (organizer opens -> debaters take turns -> JSON verdict -> final report),
+  config-driven roles. Source is in your current working directory — READ it before proposing changes
+  (README.md, run.py, src/orchestrator.py, src/document.py, src/drivers.py, src/prompts.py, src/config.py).
+
+  A prior review already AGREED and RANKED the improvements to make (do NOT re-litigate what to fix;
+  your job is HOW to implement them):
+  1. Fix the never-triggering per-turn timeout in src/drivers.py — invoke() drains `for line in
+     proc.stdout` before proc.wait(timeout=...), so a hung CLI never times out. Need bounded process
+     execution (reader thread/queue keeping live logs), a deadline, and process-group kill.
+  2. Robust verdict parsing + explicit failed-turn records — _parse_verdict()'s regex can't match
+     nested braces and silently defaults to "continue"; parse the last non-empty line via json.loads,
+     validate consensus_reached in {Yes,No}, log the raw line on failure. Separately, invoke() ignores
+     non-zero exit; return a DriverResult(text,status,error) and have the orchestrator append a clearly
+     labelled failure record instead of publishing errors as debate content.
+  3. Append-integrity — SharedDoc.append() writes model output verbatim into the source of truth.
+     Escape/strip harness-owned grammars in agent bodies: line-start `## [` headings AND the `· #N ·`
+     sequence marker (a body containing `· #99 ·` poisons next_seq() — this actually happened in the
+     prior run, jumping #13 -> #100).
+  4. Explicit --resume / non-destructive doc — SharedDoc(..., reset=True) truncates DISCUSSION.md on
+     every start, destroying human edits and crashed-run artifacts. Make reset opt-in, add --resume in
+     run.py, refuse resume unless the header topic matches, resume only at complete round boundaries.
+  Cross-cutting: pytest tests underpin all four. A document size/token warning is the cheap first
+  context step. Per-contribution anchors and auto-summarization are DEFERRED.
+
+  Your task now: produce a concrete, sequenced IMPLEMENTATION PLAN. For each item settle: the exact
+  approach and code changes (files/functions, rough diff shape), dependency order and what ships in the
+  FIRST PR vs later, the specific test cases that prove it, and the risks/rollback. Disagree on
+  approach where you genuinely do — minimal-diff vs robust-but-larger — and converge on one plan.
+
+drivers:
+  claude:
+    cmd: ["claude", "-p", "--output-format", "text", "--allowedTools", "Read,Glob,Grep"]
+    mode: stdin
+  codex:
+    cmd: ["codex", "exec", "--output-last-message", "{outfile}", "-"]
+    mode: stdin
+
+organizer:
+  name: manager
+  driver: claude
+  role: >
+    You are the manager/chair of this implementation-planning session. You are a FACILITATOR, not the
+    author of the plan: do NOT propose approaches or decide the sequencing yourself, and do NOT steer
+    toward any implementation. The list of WHAT to fix is already settled — keep the debate on HOW.
+    Open by inviting codex_dev and claude_dev to each propose their implementation approach and the
+    order things should ship. Each round, name the single sharpest open question about approach,
+    sequencing, or test design and require the next round to resolve it. Do not declare convergence
+    until they have a concrete, sequenced plan — first PR vs later, files/functions to touch, tests
+    that prove each item, and named risks — with agreement, not a fuzzy "sounds good". Only then output
+    consensus_reached=Yes. Stay strictly neutral; make no engineering choices for them.
+
+agents:
+  - name: codex_dev
+    driver: codex
+    role: >
+      You are the pragmatic implementation lead. You favor minimal, shippable diffs and a small first
+      PR that de-risks the rest. Read the actual code before proposing a change, cite exact
+      files/functions, and for each item give the concrete change (rough diff shape), how many lines,
+      and the test cases. Push for the smallest correct first PR and challenge any step that could be
+      deferred without blocking the others. When claude_dev wants a larger/more-robust approach, demand
+      it prove the payoff over the minimal diff; even when you agree, add a caveat or a cost — never echo.
+  - name: claude_dev
+    driver: claude
+    role: >
+      You are the reliability- and sequencing-minded reviewer. You stress-test the plan: hidden
+      dependencies between items, ordering that creates rework, edge cases the tests must cover, and
+      places a minimal diff leaves a latent bug. Read the source and name concrete failure modes of the
+      proposed approach. Argue for the sequencing that minimizes total rework and for tests that would
+      actually catch regressions. When codex_dev's minimal diff is genuinely sufficient, concede and say
+      why — the goal is the best plan that ships safely, not the largest one.

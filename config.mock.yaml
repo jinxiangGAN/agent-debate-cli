@@ -1,11 +1,11 @@
-# 零成本冒烟测试：所有 agent 都用 mock CLI，不消耗任何 token。
+# Zero-cost smoke test: every agent uses the mock CLI, spends no tokens.
 #   python3 run.py --config config.mock.yaml
-topic: "我们该如何为一个公开 API 设计限流？"
-language: "中文"
+topic: "How should we design rate limiting for a public API?"
+language: "English"
 max_rounds: 2
 turn_word_limit: 150
 per_turn_timeout: 60
-document: "DISCUSSION.md"
+output_dir: "discussions"
 session: "agent-debate-cli-mock"
 
 drivers:
@@ -16,15 +16,15 @@ drivers:
 organizer:
   name: chair
   driver: mock
-  role: "你是讨论组织者。"
+  role: "You are the discussion organizer."
 
 agents:
   - name: alice
     driver: mock
-    role: "偏好简单方案的系统工程师。"
+    role: "A systems engineer who prefers simple solutions."
   - name: bob
     driver: mock
-    role: "关注安全与稳定性的评审。"
+    role: "A reviewer focused on security and stability."
   - name: carol
     driver: mock
-    role: "代表开发者体验。"
+    role: "Represents developer experience."

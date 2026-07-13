@@ -16,22 +16,26 @@ from . import prompts
 
 
 def _parse_verdict(text: str) -> tuple[bool, str]:
-    """从组织者小结里抽出末尾的 JSON 裁决，返回 (是否收敛, 理由)。
+    """裁决解析：取**最后一非空行**做 json.loads，校验 consensus_reached 精确 ∈ {Yes,No}。
 
-    容错：找不到 JSON 时，退化为关键词匹配；再不行就当作"继续"。
+    prompt 已要求把 JSON 单独放在最后一行，所以不再用会漏嵌套花括号的正则；
+    解析失败一律返回 (False, 诊断)——宁可多讨论一轮，也不要静默假收敛。
     """
-    matches = re.findall(r"\{[^{}]*consensus_reached[^{}]*\}", text, re.DOTALL)
-    if matches:
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
         try:
-            obj = json.loads(matches[-1])
-            reached = str(obj.get("consensus_reached", "")).strip().lower() in ("yes", "true", "1")
-            return reached, str(obj.get("reason", ""))
-        except json.JSONDecodeError:
-            pass
-    low = text.lower()
-    if '"consensus_reached": "yes"' in low or "consensus_reached: yes" in low:
-        return True, "(从文本推断)"
-    return False, "(未解析到裁决，默认继续)"
+            obj = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            return False, f"verdict parse failed (last non-empty line is not JSON): {line[:160]}"
+        if not isinstance(obj, dict):
+            return False, "verdict JSON is not an object"
+        val = str(obj.get("consensus_reached", "")).strip()
+        if val not in ("Yes", "No"):
+            return False, f"invalid consensus_reached value: {val!r}"
+        return val == "Yes", str(obj.get("reason", ""))
+    return False, "empty verdict"
 
 
 class Orchestrator:
@@ -56,65 +60,89 @@ class Orchestrator:
         panes += [(a.name, a.log_path) for a in self._all_agents()]
         return panes
 
+    def _append_result(self, author: str, label: str, result) -> bool:
+        """把一次调用的结果写进文档。ok -> 正常发言；否则 -> 带标签的失败记录。
+        返回 True 表示 ok。所有调用（含组织者/最终报告）都走这里，堵住"特权发言者"绕过。
+        """
+        if result.ok:
+            self.doc.append(author, label, result.text)
+            return True
+        body = f"⚠️ turn failed (status={result.status}): {result.error}"
+        if result.text:
+            body += f"\n\nCaptured output (tail):\n{result.text}"
+        self.doc.append(author, f"{label} · FAILED", body)
+        return False
+
     def _maybe_human_turn(self, round_no: int) -> None:
         if not self.interactive:
             return
         try:
             note = self._human_input(
-                f"\n  [第 {round_no} 轮结束] 想插话吗？直接输入一句话，或直接回车跳过（也可去编辑 DISCUSSION.md）：\n  > "
+                f"\n  [end of round {round_no}] Want to chime in? Type a line, or press Enter to skip "
+                f"(you can also edit DISCUSSION.md directly):\n  > "
             ).strip()
         except EOFError:
             note = ""
         if note:
-            self.doc.append("你", f"第 {round_no} 轮后·人类补充", note)
+            self.doc.append("You", f"Human note after round {round_no}", note)
 
     def run(self) -> str:
         c = self.cfg
 
-        # 1) 组织者开场
+        # 0) Optional background material: written first so every agent reads it
+        if c.context.strip():
+            self.doc.append("Background", "for reference", c.context.strip())
+
+        # 1) Organizer opening
         opening = self.organizer.run(
-            "开场",
+            "Opening",
             prompts.organizer_opening(
                 c.organizer.role, c.topic, c.language,
                 self.doc.read(), [w.name for w in self.workers],
             ),
             c.per_turn_timeout,
         )
-        self.doc.append(self.organizer.name, "组织者·开场", opening)
+        self._append_result(self.organizer.name, "Organizer · Opening", opening)
 
-        # 2) 多轮讨论
+        # 2) Debate rounds
         for round_no in range(1, c.max_rounds + 1):
+            round_failed = False
             for w in self.workers:
                 reply = w.run(
-                    f"第 {round_no} 轮发言",
+                    f"Round {round_no}",
                     prompts.agent_turn(
                         w.spec.role, c.topic, c.language,
                         self.doc.read(), c.turn_word_limit, w.name,
                     ),
                     c.per_turn_timeout,
                 )
-                self.doc.append(w.name, f"第 {round_no} 轮", reply)
+                if not self._append_result(w.name, f"Round {round_no}", reply):
+                    round_failed = True
 
             review = self.organizer.run(
-                f"第 {round_no} 轮裁决",
+                f"Round {round_no} verdict",
                 prompts.organizer_review(
                     c.organizer.role, c.topic, c.language,
                     self.doc.read(), round_no, c.max_rounds,
                 ),
                 c.per_turn_timeout,
             )
-            self.doc.append(self.organizer.name, f"组织者·第 {round_no} 轮小结", review)
+            review_ok = self._append_result(
+                self.organizer.name, f"Organizer · Round {round_no} summary", review)
 
-            reached, _ = _parse_verdict(review)
+            # A round with a failed turn can never converge (avoid false consensus on a
+            # crippled round); a failed organizer review also can't declare Yes.
+            parsed, _ = _parse_verdict(review.text) if review_ok else (False, "review failed")
+            reached = review_ok and parsed and not round_failed
             if reached:
                 break
             self._maybe_human_turn(round_no)
 
-        # 3) 组织者最终收尾
+        # 3) Organizer final report
         final = self.organizer.run(
-            "最终结论",
-            prompts.organizer_final(c.organizer.role, c.topic, c.language, self.doc.read()),
+            "Final report",
+            prompts.organizer_final(c.organizer.role, c.topic, c.report_language, self.doc.read()),
             c.per_turn_timeout,
         )
-        self.doc.append(self.organizer.name, "组织者·最终结论", final)
+        self._append_result(self.organizer.name, "Organizer · Final report", final)
         return self.doc.path

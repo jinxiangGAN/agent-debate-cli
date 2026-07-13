@@ -14,6 +14,8 @@
 from __future__ import annotations
 import argparse
 import os
+import re
+import shutil
 import sys
 from datetime import datetime
 
@@ -22,6 +24,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.config import Config
 from src.orchestrator import Orchestrator
 from src import tmuxio
+
+
+def slugify(topic: str, maxlen: int = 40) -> str:
+    """把 topic 变成安全的文件夹名：去掉文件系统非法字符，空白转连字符，
+    保留中英文，截断到 maxlen。"""
+    s = topic.strip()
+    s = re.sub(r'[\\/:*?"<>|]', "", s)      # 去掉文件系统非法字符
+    s = re.sub(r"\s+", "-", s)               # 空白 -> 连字符
+    s = s.strip("-.")
+    s = s[:maxlen].strip("-.")
+    return s or "discussion"
 
 
 def main() -> int:
@@ -37,8 +50,21 @@ def main() -> int:
     cfg = Config.load(args.config)
 
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_dir = os.path.join(root, "logs", run_id)
+    if cfg.document:
+        # 固定输出模式（config 里显式写了 document）：文档用该路径，日志放 logs/<时间戳>/
+        log_dir = os.path.join(root, "logs", run_id)
+    else:
+        # 按 topic 自动分文件夹：discussions/<topic>/<时间戳>/{DISCUSSION.md, *.log}
+        run_dir = os.path.join(root, cfg.output_dir, slugify(cfg.topic), run_id)
+        cfg.document = os.path.join(run_dir, "DISCUSSION.md")
+        log_dir = run_dir
     os.makedirs(log_dir, exist_ok=True)
+
+    # 把本次运行用到的 config 快照进结果文件夹，方便复现
+    try:
+        shutil.copy(args.config, os.path.join(log_dir, os.path.basename(args.config)))
+    except OSError:
+        pass
 
     orch = Orchestrator(cfg, log_dir, interactive=args.interactive)
 
